@@ -1,0 +1,93 @@
+from flask import Flask, request, jsonify, send_file
+from flask_cors import CORS
+import os
+import logging
+from pptx_processor import PowerPointProcessor
+
+# Configure logging
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
+
+app = Flask(__name__)
+CORS(app)
+
+# Configuration
+CVS_FOLDER = os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'cvs')
+OUTPUT_FOLDER = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'temp')
+OUTPUT_EXAMPLES_FOLDER = os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'outpout_examples')
+
+# Ensure output folder exists
+os.makedirs(OUTPUT_FOLDER, exist_ok=True)
+
+@app.route('/health', methods=['GET'])
+def health_check():
+    """Health check endpoint"""
+    return jsonify({"status": "healthy"}), 200
+
+@app.route('/generate', methods=['POST'])
+def generate_team_slide():
+    """
+    Generate team slide from consultant names
+    Expected JSON payload: {"consultants": ["Name1", "Name2", "Name3", "Name4"]}
+    """
+    try:
+        # Get consultant names from request
+        data = request.get_json()
+        if not data or 'consultants' not in data:
+            return jsonify({"error": "Missing 'consultants' field in request body"}), 400
+        
+        consultant_names = data['consultants']
+        
+        # Validate we have exactly 4 consultants
+        if len(consultant_names) != 4:
+            return jsonify({"error": "Exactly 4 consultant names are required"}), 400
+        
+        # Validate all names are non-empty
+        if not all(name.strip() for name in consultant_names):
+            return jsonify({"error": "All consultant names must be non-empty"}), 400
+        
+        logger.info(f"Processing consultants: {consultant_names}")
+        
+        # Initialize PowerPoint processor
+        processor = PowerPointProcessor(CVS_FOLDER, OUTPUT_FOLDER, OUTPUT_EXAMPLES_FOLDER)
+        
+        # Find matching filenames for each consultant
+        filenames = []
+        for name in consultant_names:
+            filename = processor.find_cv_file(name)
+            if not filename:
+                return jsonify({"error": f"CV file not found for consultant: {name}"}), 404
+            filenames.append(filename)
+        
+        logger.info(f"Found matching files: {filenames}")
+        
+        # Process the consultants and generate team slide
+        output_file = processor.generate_team_slide(consultant_names, filenames)
+        
+        # Return the generated file
+        return send_file(
+            output_file,
+            as_attachment=True,
+            download_name='Team_Slide_Output.pptx',
+            mimetype='application/vnd.openxmlformats-officedocument.presentationml.presentation'
+        )
+        
+    except FileNotFoundError as e:
+        logger.error(f"File not found: {str(e)}")
+        return jsonify({"error": f"CV file not found: {str(e)}"}), 404
+        
+    except Exception as e:
+        logger.error(f"Error generating team slide: {str(e)}")
+        return jsonify({"error": f"Failed to generate team slide: {str(e)}"}), 500
+
+@app.route('/list-cvs', methods=['GET'])
+def list_cvs():
+    """List available CV files for debugging"""
+    try:
+        cv_files = [f for f in os.listdir(CVS_FOLDER) if f.endswith('.pptx')]
+        return jsonify({"cv_files": cv_files}), 200
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+if __name__ == '__main__':
+    app.run(host='0.0.0.0', port=5000, debug=True)
