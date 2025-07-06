@@ -34,15 +34,30 @@ export default function TeamSlideGenerator() {
     setGenerationComplete(false)
 
     try {
-      // Simulate API call to backend
-      // In real implementation: const response = await generate_team_slide(consultantNames)
-      await new Promise((resolve) => setTimeout(resolve, 3000)) // Simulate processing time
+      // Call Flask backend to generate team slide
+      const response = await fetch('http://localhost:5000/generate', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          consultants: filledNames
+        })
+      })
 
-      // Mock successful response
-      setDownloadUrl("/mock-team-slide.pptx")
+      if (!response.ok) {
+        const errorData = await response.json()
+        throw new Error(errorData.error || 'Failed to generate team slide')
+      }
+
+      // Create blob URL for download
+      const blob = await response.blob()
+      const downloadUrl = URL.createObjectURL(blob)
+      setDownloadUrl(downloadUrl)
       setGenerationComplete(true)
     } catch (err) {
-      setError("Failed to generate team slide. Please check that all CV files exist and try again.")
+      console.error('Error generating team slide:', err)
+      setError(err instanceof Error ? err.message : "Failed to generate team slide. Please check that all CV files exist and try again.")
     } finally {
       setIsGenerating(false)
     }
@@ -50,11 +65,15 @@ export default function TeamSlideGenerator() {
 
   const handleDownload = () => {
     if (downloadUrl) {
-      // In real implementation, this would trigger the actual download
       const link = document.createElement("a")
       link.href = downloadUrl
-      link.download = "team-slide.pptx"
+      link.download = "Team_Slide_Output.pptx"
+      document.body.appendChild(link)
       link.click()
+      document.body.removeChild(link)
+      
+      // Clean up the blob URL to free memory
+      URL.revokeObjectURL(downloadUrl)
     }
   }
 
