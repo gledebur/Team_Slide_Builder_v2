@@ -1,5 +1,6 @@
 import os
 import logging
+import re
 from typing import List, Dict, Tuple, Optional
 from pptx import Presentation
 from pptx.util import Inches, Pt
@@ -88,14 +89,15 @@ class PowerPointProcessor:
                 if hasattr(shape, 'text') and shape.text.strip():
                     all_text.append(shape.text.strip())
             
-            # Parse the text to extract name, role, location, and bullets
-            name, role, location, experience_bullets = self._parse_cv_text(all_text, consultant_name)
+            # Parse the text to extract name, role, location, bullets, and years of experience
+            name, role, location, experience_bullets, years_experience = self._parse_cv_text(all_text, consultant_name)
             
             return {
                 'name': name,
                 'role': role,
                 'location': location,
                 'experience_bullets': experience_bullets,
+                'years_experience': years_experience,
                 'headshot_image': headshot_image
             }
             
@@ -103,14 +105,15 @@ class PowerPointProcessor:
             logger.error(f"Error extracting data from {cv_filepath}: {str(e)}")
             raise
     
-    def _parse_cv_text(self, text_blocks: List[str], consultant_name: str) -> Tuple[str, str, str, List[str]]:
+    def _parse_cv_text(self, text_blocks: List[str], consultant_name: str) -> Tuple[str, str, str, List[str], str]:
         """
-        Parse text blocks to extract name, role, location, and experience bullets
+        Parse text blocks to extract name, role, location, experience bullets, and years of experience
         """
         name = consultant_name  # Use provided name as fallback
         role = ""
         location = ""
         experience_bullets = []
+        years_experience = ""
         
         for text_block in text_blocks:
             lines = [line.strip() for line in text_block.split('\n') if line.strip()]
@@ -119,6 +122,14 @@ class PowerPointProcessor:
                 # Skip empty lines
                 if not line:
                     continue
+                    
+                # Look for years of experience patterns
+                if not years_experience:
+                    # Pattern like "3+ years", "2 years", "5+ years of consulting"
+                    years_pattern = re.search(r'(\d+)\+?\s*years?\s*(of\s*)?(consulting|experience|industry)', line.lower())
+                    if years_pattern:
+                        years_num = years_pattern.group(1)
+                        years_experience = f"{years_num}+ years of consulting and\nindustry experience"
                     
                 # Look for bullet points (lines starting with •, -, or similar)
                 if any(line.startswith(bullet) for bullet in ['•', '-', '▪', '◦', '→']):
@@ -143,14 +154,16 @@ class PowerPointProcessor:
             role = "Consultant"
         if not location:
             location = "Location"
+        if not years_experience:
+            years_experience = "3+ years of consulting and\nindustry experience"  # Default fallback
             
-        logger.info(f"Parsed data - Name: {name}, Role: {role}, Location: {location}, Bullets: {len(experience_bullets)}")
+        logger.info(f"Parsed data - Name: {name}, Role: {role}, Location: {location}, Years: {years_experience}, Bullets: {len(experience_bullets)}")
         
-        return name, role, location, experience_bullets
+        return name, role, location, experience_bullets, years_experience
     
     def generate_team_slide(self, consultant_names: List[str], filenames: List[str]) -> str:
         """
-        Generate a team slide with 2x2 layout from consultant data
+        Generate a team slide matching the exact format of the reference example
         Returns path to the generated PowerPoint file
         """
         logger.info("Starting team slide generation")
@@ -177,26 +190,52 @@ class PowerPointProcessor:
         slide_layout = prs.slide_layouts[6]  # Blank layout
         slide = prs.slides.add_slide(slide_layout)
         
-        # Define layout parameters for 2x2 grid
+        # Define layout parameters matching the reference
         slide_width = prs.slide_width
         slide_height = prs.slide_height
         
-        # Grid parameters
-        margin = Inches(0.5)
-        quadrant_width = (slide_width - 3 * margin) / 2
-        quadrant_height = (slide_height - 3 * margin) / 2
+        # Add title "Your Kearney project team" in purple on the left
+        title_left = Inches(0.5)
+        title_top = Inches(0.8)
+        title_width = Inches(3)
+        title_height = Inches(1.5)
         
-        # Define positions for each quadrant (top-left, top-right, bottom-left, bottom-right)
-        positions = [
-            (margin, margin),  # Top-left
-            (margin + quadrant_width + margin, margin),  # Top-right
-            (margin, margin + quadrant_height + margin),  # Bottom-left
-            (margin + quadrant_width + margin, margin + quadrant_height + margin)  # Bottom-right
-        ]
+        title_box = slide.shapes.add_textbox(title_left, title_top, title_width, title_height)
+        title_frame = title_box.text_frame
+        title_frame.margin_left = Pt(0)
+        title_frame.margin_top = Pt(0)
+        title_para = title_frame.paragraphs[0]
+        title_run = title_para.add_run()
+        title_run.text = "Your Kearney\nproject team"
+        title_run.font.size = Pt(24)
+        title_run.font.color.rgb = RGBColor(102, 45, 145)  # Consulting Purple
+        title_run.font.bold = True
         
-        # Add each consultant to their quadrant
-        for i, (data, position) in enumerate(zip(consultants_data, positions)):
-            self._add_consultant_to_slide(slide, data, position, quadrant_width, quadrant_height)
+        # Define horizontal layout for consultants
+        consultant_start_left = Inches(4.2)
+        consultant_width = Inches(2.2)
+        consultant_spacing = Inches(0.1)
+        
+        # Add each consultant horizontally
+        for i, data in enumerate(consultants_data):
+            consultant_left = consultant_start_left + i * (consultant_width + consultant_spacing)
+            self._add_consultant_to_slide(slide, data, consultant_left, consultant_width)
+        
+        # Add "Project Team" label at bottom left matching reference
+        project_label_left = Inches(0.5)
+        project_label_top = Inches(6.8)
+        project_label_width = Inches(1.5)
+        project_label_height = Inches(0.4)
+        
+        project_box = slide.shapes.add_textbox(project_label_left, project_label_top, project_label_width, project_label_height)
+        project_frame = project_box.text_frame
+        project_frame.margin_left = Pt(0)
+        project_frame.margin_top = Pt(0)
+        project_para = project_frame.paragraphs[0]
+        project_run = project_para.add_run()
+        project_run.text = "Project Team"
+        project_run.font.size = Pt(10)
+        project_run.font.color.rgb = RGBColor(64, 64, 64)
         
         # Save the presentation
         output_filename = "Team_Slide_Output.pptx"
@@ -206,17 +245,17 @@ class PowerPointProcessor:
         logger.info(f"Team slide saved to {output_path}")
         return output_path
     
-    def _add_consultant_to_slide(self, slide, consultant_data: Dict, position: Tuple, width, height):
+    def _add_consultant_to_slide(self, slide, consultant_data: Dict, left_position, width):
         """
-        Add a single consultant's information to a quadrant of the slide
+        Add a single consultant's information in vertical layout matching the reference
         """
-        left, top = position
+        # Define vertical layout positions
+        photo_top = Inches(0.8)
+        photo_width = Inches(1.8)
+        photo_height = Inches(2.2)
         
-        # Define layout within quadrant
-        image_width = Inches(2)
-        image_height = Inches(2.5)
-        text_left = left + image_width + Inches(0.2)
-        text_width = width - image_width - Inches(0.2)
+        # Center the photo within the column width
+        photo_left = left_position + (width - photo_width) / 2
         
         # Add headshot image if available
         if consultant_data['headshot_image']:
@@ -226,8 +265,8 @@ class PowerPointProcessor:
                     temp_img.write(consultant_data['headshot_image'])
                     temp_img_path = temp_img.name
                 
-                # Add image to slide
-                slide.shapes.add_picture(temp_img_path, left, top, image_width, image_height)
+                # Add image to slide with proper cropping/resizing
+                slide.shapes.add_picture(temp_img_path, photo_left, photo_top, photo_width, photo_height)
                 
                 # Clean up temp file
                 os.unlink(temp_img_path)
@@ -235,44 +274,71 @@ class PowerPointProcessor:
             except Exception as e:
                 logger.warning(f"Could not add image for {consultant_data['name']}: {str(e)}")
         
-        # Add text content
-        text_top = top
-        
-        # Name (bold)
-        name_box = slide.shapes.add_textbox(text_left, text_top, text_width, Inches(0.4))
+        # Name in purple (positioned under photo)
+        name_top = photo_top + photo_height + Inches(0.15)
+        name_box = slide.shapes.add_textbox(left_position, name_top, width, Inches(0.4))
         name_frame = name_box.text_frame
         name_frame.margin_left = Pt(0)
         name_frame.margin_top = Pt(0)
         name_para = name_frame.paragraphs[0]
+        name_para.alignment = PP_ALIGN.CENTER
         name_run = name_para.add_run()
         name_run.text = consultant_data['name']
         name_run.font.bold = True
-        name_run.font.size = Pt(14)
-        name_run.font.color.rgb = RGBColor(0, 0, 0)
+        name_run.font.size = Pt(12)
+        name_run.font.color.rgb = RGBColor(102, 45, 145)  # Consulting Purple
         
-        # Role and location (italic)
-        role_top = text_top + Inches(0.4)
-        role_box = slide.shapes.add_textbox(text_left, role_top, text_width, Inches(0.6))
-        role_frame = role_box.text_frame
-        role_frame.margin_left = Pt(0)
-        role_frame.margin_top = Pt(0)
-        role_para = role_frame.paragraphs[0]
-        role_run = role_para.add_run()
-        role_run.text = f"{consultant_data['role']}\n{consultant_data['location']}"
-        role_run.font.italic = True
-        role_run.font.size = Pt(10)
-        role_run.font.color.rgb = RGBColor(64, 64, 64)
+        # Role and location summary (e.g., "Sr Consultant, Munich")
+        summary_top = name_top + Inches(0.4)
+        summary_box = slide.shapes.add_textbox(left_position, summary_top, width, Inches(0.3))
+        summary_frame = summary_box.text_frame
+        summary_frame.margin_left = Pt(0)
+        summary_frame.margin_top = Pt(0)
+        summary_para = summary_frame.paragraphs[0]
+        summary_para.alignment = PP_ALIGN.CENTER
+        summary_run = summary_para.add_run()
         
-        # Experience bullets
-        bullets_top = role_top + Inches(0.6)
-        bullets_height = height - Inches(1.0)  # Remaining space
-        bullets_box = slide.shapes.add_textbox(text_left, bullets_top, text_width, bullets_height)
+        # Parse role to create summary line like "Sr Consultant, Munich"
+        role_parts = consultant_data['role'].split()
+        if 'consultant' in consultant_data['role'].lower():
+            if any(word in consultant_data['role'].lower() for word in ['senior', 'sr', 'lead']):
+                summary_text = "Sr Consultant"
+            else:
+                summary_text = "Consultant"
+        else:
+            summary_text = consultant_data['role']
+        
+        # Add location if available
+        if consultant_data['location'] and consultant_data['location'] != "Location":
+            summary_text += f", {consultant_data['location']}"
+        
+        summary_run.text = summary_text
+        summary_run.font.size = Pt(10)
+        summary_run.font.color.rgb = RGBColor(64, 64, 64)
+        
+        # Experience summary line (e.g., "3+ years of consulting and industry experience")
+        exp_summary_top = summary_top + Inches(0.35)
+        exp_summary_box = slide.shapes.add_textbox(left_position, exp_summary_top, width, Inches(0.3))
+        exp_summary_frame = exp_summary_box.text_frame
+        exp_summary_frame.margin_left = Pt(0)
+        exp_summary_frame.margin_top = Pt(0)
+        exp_summary_para = exp_summary_frame.paragraphs[0]
+        exp_summary_run = exp_summary_para.add_run()
+        exp_summary_run.text = consultant_data['years_experience']
+        exp_summary_run.font.size = Pt(9)
+        exp_summary_run.font.color.rgb = RGBColor(64, 64, 64)
+        
+        # Experience bullets (limit to 3 as per requirements)
+        bullets_top = exp_summary_top + Inches(0.6)
+        bullets_box = slide.shapes.add_textbox(left_position, bullets_top, width, Inches(3.5))
         bullets_frame = bullets_box.text_frame
         bullets_frame.margin_left = Pt(0)
         bullets_frame.margin_top = Pt(0)
         
-        # Add each bullet point
-        for i, bullet in enumerate(consultant_data['experience_bullets']):
+        # Add up to 3 bullet points
+        experience_bullets = consultant_data['experience_bullets'][:3]
+        
+        for i, bullet in enumerate(experience_bullets):
             if i == 0:
                 para = bullets_frame.paragraphs[0]
             else:
@@ -280,8 +346,9 @@ class PowerPointProcessor:
             
             para.level = 0
             run = para.add_run()
-            run.text = f"• {bullet}"
-            run.font.size = Pt(9)
+            run.text = f"– {bullet}"  # Use en-dash as in reference
+            run.font.size = Pt(8)
             run.font.color.rgb = RGBColor(32, 32, 32)
+            para.space_after = Pt(6)  # Add spacing between bullets
         
-        logger.info(f"Added {consultant_data['name']} to slide at position {position}")
+        logger.info(f"Added {consultant_data['name']} to slide at position {left_position}")
