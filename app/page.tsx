@@ -8,6 +8,34 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/com
 import { Alert, AlertDescription } from "@/components/ui/alert"
 import { Loader2, Download, Users, FileText } from "lucide-react"
 
+// Dynamic backend URL detection
+const getBackendUrl = () => {
+  if (typeof window !== 'undefined') {
+    // Check if we're in a Codespace environment
+    const hostname = window.location.hostname
+    if (hostname.includes('.app.github.dev')) {
+      // Extract the codespace identifier and construct backend URL
+      const parts = hostname.split('.')
+      if (parts.length >= 4) {
+        const baseUrl = parts.slice(0, -3).join('.') // Remove 'app.github.dev'
+        return `https://${baseUrl}-5000.app.github.dev`
+      }
+    }
+    
+    // Check if we're running on a different port (e.g., development)
+    if (hostname === 'localhost' || hostname === '127.0.0.1') {
+      return 'http://localhost:5000'
+    }
+    
+    // Default fallback - try same host with port 5000
+    const protocol = window.location.protocol
+    return `${protocol}//${hostname}:5000`
+  }
+  
+  // Server-side rendering fallback
+  return 'http://localhost:5000'
+}
+
 export default function TeamSlideGenerator() {
   const [consultantNames, setConsultantNames] = useState(["", "", "", ""])
   const [isGenerating, setIsGenerating] = useState(false)
@@ -34,8 +62,11 @@ export default function TeamSlideGenerator() {
     setGenerationComplete(false)
 
     try {
+      const backendUrl = getBackendUrl()
+      console.log('Using backend URL:', backendUrl) // Debug log
+      
       // Call Flask backend to generate team slide
-      const response = await fetch('http://localhost:5000/generate', {
+      const response = await fetch(`${backendUrl}/generate`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
