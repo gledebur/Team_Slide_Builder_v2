@@ -279,68 +279,74 @@ class PowerPointProcessor:
                         'headshot_image': None
                     })
         
-        # Load the output template (fix the typo in filename)
-        template_path = os.path.join(self.examples_folder, 'Output_Example_Placeholder_Logic.pptx')
+        # Load the output template (use the final example template, not placeholder logic)
+        template_path = os.path.join(self.examples_folder, 'Outpout_Example.pptx')
         
-        # Check for the typo version first (current file), then the correct name
         if not os.path.exists(template_path):
-            template_path = os.path.join(self.examples_folder, 'Outpout_Example_Placeholder_Logic.pptx')
-            if not os.path.exists(template_path):
-                raise FileNotFoundError(f"Output template not found in {self.examples_folder}")
+            raise FileNotFoundError(f"Output template not found in {self.examples_folder}")
         
         logger.info(f"Loading output template from {template_path}")
         prs = Presentation(template_path)
         slide = prs.slides[0]
         
-        # First, collect all placeholder shapes organized by position/proximity
-        text_placeholders = []
-        image_placeholders = []
-        experience_shapes = []
+        # Define the template consultant names that need to be replaced
+        template_names = [
+            "Dr. Caledonia Trapp",
+            "Ben Reinitzer", 
+            "Benedict Wolske",
+            "Gregor Ledebur-Wicheln"
+        ]
+        
+        # Collect all shapes organized by consultant position
+        consultant_shapes = [[] for _ in range(4)]  # One list per consultant
+        image_shapes = []
         
         for shape in slide.shapes:
-            if hasattr(shape, 'text_frame') and shape.text_frame:
-                shape_text = shape.text.strip()
+            try:
+                # Find text shapes containing consultant names
+                if hasattr(shape, 'text_frame') and shape.text_frame:
+                    shape_text = shape.text.strip()
+                    
+                    # Check which consultant this shape belongs to
+                    for i, template_name in enumerate(template_names):
+                        if template_name in shape_text:
+                            consultant_shapes[i].append({
+                                'shape': shape,
+                                'type': 'name_title',
+                                'original_text': shape_text
+                            })
+                            break
+                    
+                    # Also check for experience bullet points
+                    if "years of consulting" in shape_text.lower():
+                        # Determine which consultant this belongs to by position
+                        position_score = shape.top + shape.left
+                        # Assign to closest consultant quadrant
+                        col = 0 if shape.left < slide.shapes[0].width // 2 else 1
+                        row = 0 if shape.top < slide.shapes[0].height // 2 else 1
+                        consultant_idx = row * 2 + col
+                        
+                        if consultant_idx < 4:
+                            consultant_shapes[consultant_idx].append({
+                                'shape': shape,
+                                'type': 'experience',
+                                'original_text': shape_text
+                            })
                 
-                # Find text placeholders
-                if shape_text in ["First Name", "Last Name", "Office"]:
-                    text_placeholders.append({
+                # Find image shapes (consultant photos)
+                elif hasattr(shape, 'image'):
+                    # Determine position for image assignment
+                    position_score = shape.top + shape.left
+                    image_shapes.append({
                         'shape': shape,
-                        'placeholder_type': shape_text,
-                        'position': shape.top + shape.left  # Simple position ranking
+                        'position': position_score
                     })
-                
-                # Find experience shapes
-                elif "years of consulting experience" in shape_text.lower():
-                    experience_shapes.append({
-                        'shape': shape,
-                        'position': shape.top + shape.left
-                    })
-            
-            # Find image placeholders
-            should_check_image = False
-            if hasattr(shape, 'text') and "replace picture" in shape.text.lower():
-                should_check_image = True
-            elif hasattr(shape, 'image') and hasattr(shape, 'name'):
-                if "replace" in shape.name.lower() or "picture" in shape.name.lower():
-                    should_check_image = True
-            
-            if should_check_image:
-                image_placeholders.append({
-                    'shape': shape,
-                    'position': shape.top + shape.left
-                })
+            except Exception as e:
+                logger.warning(f"Error processing shape: {str(e)}")
+                continue
         
-        # Sort placeholders by position (top-left to bottom-right order)
-        text_placeholders.sort(key=lambda x: x['position'])
-        image_placeholders.sort(key=lambda x: x['position'])
-        experience_shapes.sort(key=lambda x: x['position'])
-        
-        # Group text placeholders by consultant (every 3 placeholders = 1 consultant)
-        consultant_text_groups = []
-        for i in range(0, len(text_placeholders), 3):
-            group = text_placeholders[i:i+3]
-            if len(group) == 3:  # Only process complete groups
-                consultant_text_groups.append(group)
+        # Sort image shapes by position for consistent assignment
+        image_shapes.sort(key=lambda x: x['position'])
         
         # Process up to 4 consultants
         shapes_to_remove = []
@@ -348,34 +354,43 @@ class PowerPointProcessor:
         
         for i, consultant_data in enumerate(consultants_data[:4]):
             try:
-                # Update text placeholders for this consultant
-                if i < len(consultant_text_groups):
-                    for placeholder in consultant_text_groups[i]:
-                        shape = placeholder['shape']
-                        placeholder_type = placeholder['placeholder_type']
+                # Update text shapes for this consultant
+                if i < len(consultant_shapes):
+                    for shape_info in consultant_shapes[i]:
+                        shape = shape_info['shape']
+                        shape_type = shape_info['type']
+                        original_text = shape_info['original_text']
                         
-                        if placeholder_type == "First Name":
-                            shape.text = consultant_data['first_name']
-                            logger.info(f"Replaced 'First Name' with '{consultant_data['first_name']}' for consultant {i+1}")
-                        elif placeholder_type == "Last Name":
-                            shape.text = consultant_data['last_name']
-                            logger.info(f"Replaced 'Last Name' with '{consultant_data['last_name']}' for consultant {i+1}")
-                        elif placeholder_type == "Office":
-                            shape.text = consultant_data['office']
-                            logger.info(f"Replaced 'Office' with '{consultant_data['office']}' for consultant {i+1}")
+                        if shape_type == 'name_title':
+                            # Replace the consultant name and position info
+                            new_text = original_text
+                            
+                            # Replace the template name with the new consultant's name
+                            template_name = template_names[i] if i < len(template_names) else ""
+                            if template_name in original_text:
+                                full_name = f"{consultant_data['first_name']} {consultant_data['last_name']}"
+                                new_text = new_text.replace(template_name, full_name)
+                            
+                            # Update office location if present
+                            lines = new_text.split('\n')
+                            for j, line in enumerate(lines):
+                                if 'Sr Consultant,' in line:
+                                    lines[j] = f"Sr Consultant, {consultant_data['office']}"
+                                    break
+                            
+                            shape.text = '\n'.join(lines)
+                            logger.info(f"Updated name and title for consultant {i+1}: {consultant_data['first_name']} {consultant_data['last_name']}")
+                        
+                        elif shape_type == 'experience':
+                            # Replace experience bullets
+                            experience_header = "x+ years of consulting and\nindustry experience"
+                            bullets_text = "\n".join([f"– {bullet}" for bullet in consultant_data['experience_bullets']])
+                            shape.text = f"{experience_header}\n\n{bullets_text}"
+                            logger.info(f"Updated experience bullets for consultant {i+1}")
                 
-                # Add bullets to experience shape for this consultant
-                if i < len(experience_shapes):
-                    experience_shape = experience_shapes[i]['shape']
-                    existing_text = experience_shape.text.rstrip()
-                    bullets_text = "\n".join([f"• {bullet}" for bullet in consultant_data['experience_bullets']])
-                    experience_shape.text = existing_text + "\n\n" + bullets_text
-                    logger.info(f"Added experience bullets for consultant {i+1}")
-                
-                # Replace image placeholder for this consultant
-                if i < len(image_placeholders) and consultant_data['headshot_image']:
-                    placeholder_info = image_placeholders[i]
-                    shape = placeholder_info['shape']
+                # Replace image for this consultant
+                if i < len(image_shapes) and consultant_data['headshot_image']:
+                    shape = image_shapes[i]['shape']
                     
                     # Get position and size
                     left = shape.left
