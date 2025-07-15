@@ -61,9 +61,9 @@ class PowerPointProcessor:
         """
         Extract consultant data from a CV PowerPoint file using the CV_Placeholder structure as reference
         Returns: {
-            'name': str,
-            'role': str, 
-            'location': str,
+            'first_name': str,
+            'last_name': str, 
+            'office': str,
             'experience_bullets': List[str],
             'headshot_image': bytes or None
         }
@@ -81,54 +81,43 @@ class PowerPointProcessor:
             
             # Initialize data
             consultant_data = {
-                'name': consultant_name,
-                'role': "Senior Consultant",
-                'location': "Global",
+                'first_name': consultant_name.split()[0] if consultant_name else "First",
+                'last_name': consultant_name.split()[-1] if consultant_name and len(consultant_name.split()) > 1 else "Last",
+                'office': "Global",
                 'experience_bullets': [],
                 'headshot_image': None
             }
             
+            # Find top-left textbox and top-left image
+            top_left_text_shape = None
+            top_left_image_shape = None
+            min_position = float('inf')
+            min_image_position = float('inf')
+            
             # Extract data from shapes based on CV_Placeholder structure
             for i, shape in enumerate(slide.shapes):
                 try:
-                    # Shape 7: IMAGE (headshot) - based on our template analysis
+                    # Find top-left image (headshot)
                     if hasattr(shape, 'image') and consultant_data['headshot_image'] is None:
-                        image_stream = io.BytesIO(shape.image.blob)
-                        consultant_data['headshot_image'] = image_stream.getvalue()
-                        logger.info(f"Extracted headshot image from shape {i}")
+                        # Calculate position (top + left for simple ranking)
+                        position = shape.top + shape.left
+                        if position < min_image_position:
+                            min_image_position = position
+                            top_left_image_shape = shape
                     
-                    # Shape 4: Name, position, location - based on our template analysis  
+                    # Find top-left textbox
                     elif hasattr(shape, 'text') and shape.text.strip():
                         text = shape.text.strip()
+                        position = shape.top + shape.left
                         
-                        # Check if this contains name/position info (usually has "Position" or office locations)
-                        if any(keyword in text.lower() for keyword in ['position', 'office', 'location', 'germany', 'london', 'new york', 'paris', 'berlin', 'zurich', 'geneva', 'munich']):
-                            lines = [line.strip() for line in text.split('\n') if line.strip()]
-                            if lines:
-                                # Find the name line - usually contains comma and proper name structure
-                                for line in lines:
-                                    if ',' in line and any(char.isalpha() for char in line):
-                                        name_parts = line.split(',')
-                                        if len(name_parts) >= 2:
-                                            # Format: "Last Name, First Name" or similar
-                                            last_name = name_parts[0].strip()
-                                            first_name = name_parts[1].strip()
-                                            # Only update if this looks like a proper name (not random text)
-                                            if len(last_name) < 50 and len(first_name) < 50 and not any(keyword in line.lower() for keyword in ['university', 'msc', 'ba', 'phd', 'degree']):
-                                                consultant_data['name'] = f"{first_name} {last_name}"
-                                                break
-                                
-                                # Look for position and location in all lines
-                                for line in lines:
-                                    if any(keyword in line.lower() for keyword in ['consultant', 'manager', 'director', 'analyst', 'partner']) and len(line) < 100:
-                                        if consultant_data['role'] == "Senior Consultant":  # Only update if still default
-                                            consultant_data['role'] = line.strip()
-                                    elif any(keyword in line.lower() for keyword in ['germany', 'london', 'new york', 'paris', 'berlin', 'zurich', 'geneva', 'munich']) and len(line) < 100:
-                                        if consultant_data['location'] == "Global":  # Only update if still default
-                                            consultant_data['location'] = line.strip()
+                        # Check if this contains name/position info and is positioned in top-left area
+                        if (any(keyword in text.lower() for keyword in ['position', 'office', 'location', 'germany', 'london', 'new york', 'paris', 'berlin', 'zurich', 'geneva', 'munich']) 
+                            and position < min_position):
+                            min_position = position
+                            top_left_text_shape = shape
                         
-                        # Shape 1: "Selected consulting engagement experience" - extract bullet points
-                        elif 'consulting engagement experience' in text.lower() or 'consulting experience' in text.lower():
+                        # Also check for "Selected consulting engagement experience" section
+                        if 'consulting engagement experience' in text.lower() or 'consulting experience' in text.lower():
                             lines = [line.strip() for line in text.split('\n') if line.strip()]
                             bullets = []
                             
@@ -152,14 +141,45 @@ class PowerPointProcessor:
                     logger.warning(f"Error processing shape {i}: {str(e)}")
                     continue
             
+            # Extract headshot image
+            if top_left_image_shape:
+                image_stream = io.BytesIO(top_left_image_shape.image.blob)
+                consultant_data['headshot_image'] = image_stream.getvalue()
+                logger.info(f"Extracted headshot image from top-left position")
+            
+            # Extract name and office from top-left textbox
+            if top_left_text_shape:
+                text = top_left_text_shape.text.strip()
+                lines = [line.strip() for line in text.split('\n') if line.strip()]
+                
+                # Find the name line - usually contains comma and proper name structure
+                for line in lines:
+                    if ',' in line and any(char.isalpha() for char in line):
+                        name_parts = line.split(',')
+                        if len(name_parts) >= 2:
+                            # Format: "Last Name, First Name" or similar
+                            last_name = name_parts[0].strip()
+                            first_name = name_parts[1].strip()
+                            # Only update if this looks like a proper name (not random text)
+                            if len(last_name) < 50 and len(first_name) < 50 and not any(keyword in line.lower() for keyword in ['university', 'msc', 'ba', 'phd', 'degree']):
+                                consultant_data['first_name'] = first_name
+                                consultant_data['last_name'] = last_name
+                                break
+                
+                # Look for office location in all lines
+                for line in lines:
+                    if any(keyword in line.lower() for keyword in ['germany', 'london', 'new york', 'paris', 'berlin', 'zurich', 'geneva', 'munich']) and len(line) < 100:
+                        consultant_data['office'] = line.strip()
+                        break
+            
             # Ensure we have exactly 3 bullet points
             while len(consultant_data['experience_bullets']) < 3:
                 consultant_data['experience_bullets'].append("Proven track record in client engagement and project delivery")
             
             consultant_data['experience_bullets'] = consultant_data['experience_bullets'][:3]
             
-            logger.info(f"Extracted data - Name: {consultant_data['name']}, Role: {consultant_data['role']}, "
-                       f"Location: {consultant_data['location']}, Bullets: {len(consultant_data['experience_bullets'])}")
+            logger.info(f"Extracted data - First Name: {consultant_data['first_name']}, Last Name: {consultant_data['last_name']}, "
+                       f"Office: {consultant_data['office']}, Bullets: {len(consultant_data['experience_bullets'])}")
             
             return consultant_data
             
@@ -210,12 +230,11 @@ class PowerPointProcessor:
 
     def create_team_slide(self, names: List[str]) -> str:
         """
-        Create a team slide using template files instead of building from scratch.
-        Uses CV_Placeholder.pptx as reference for parsing consultant CVs
-        and Output_Example_Placeholder_Logic.pptx as the base template.
+        Create a team slide using Output_Example_Placeholder_Logic.pptx template.
+        Only modifies designated placeholders while preserving all other formatting.
         
         Args:
-            names: List of consultant names to include in the team slide
+            names: List of consultant names to include in the team slide (max 4)
             
         Returns:
             Path to the generated Team_Slide_Output.pptx file
@@ -230,9 +249,9 @@ class PowerPointProcessor:
                 logger.warning(f"CV file not found for {name}, using placeholder data")
                 # Create placeholder data for missing consultant
                 consultants_data.append({
-                    'name': name,
-                    'role': "Senior Consultant",
-                    'location': "Global",
+                    'first_name': name.split()[0] if name else "First",
+                    'last_name': name.split()[-1] if name and len(name.split()) > 1 else "Last",
+                    'office': "Global",
                     'experience_bullets': [
                         "Extensive experience in strategic consulting",
                         "Proven track record in client engagement",
@@ -249,9 +268,9 @@ class PowerPointProcessor:
                     logger.error(f"Failed to extract data from {filename}: {str(e)}")
                     # Use placeholder data if extraction fails
                     consultants_data.append({
-                        'name': name,
-                        'role': "Senior Consultant", 
-                        'location': "Global",
+                        'first_name': name.split()[0] if name else "First",
+                        'last_name': name.split()[-1] if name and len(name.split()) > 1 else "Last",
+                        'office': "Global",
                         'experience_bullets': [
                             "Extensive experience in strategic consulting",
                             "Proven track record in client engagement", 
@@ -260,84 +279,167 @@ class PowerPointProcessor:
                         'headshot_image': None
                     })
         
-        # Load the output template
-        template_path = os.path.join(self.examples_folder, 'Outpout_Example_Placeholder_Logic.pptx')
+        # Load the output template (fix the typo in filename)
+        template_path = os.path.join(self.examples_folder, 'Output_Example_Placeholder_Logic.pptx')
+        
+        # Check for the typo version first (current file), then the correct name
         if not os.path.exists(template_path):
-            raise FileNotFoundError(f"Output template not found: {template_path}")
+            template_path = os.path.join(self.examples_folder, 'Outpout_Example_Placeholder_Logic.pptx')
+            if not os.path.exists(template_path):
+                raise FileNotFoundError(f"Output template not found in {self.examples_folder}")
         
         logger.info(f"Loading output template from {template_path}")
         prs = Presentation(template_path)
         slide = prs.slides[0]
         
-        # Map consultant data to template placeholders
-        # Based on our analysis: shapes 8, 11, 12, 13 contain consultant text
-        # shapes 10, 14, 15, 16 contain consultant images
-        consultant_text_shapes = [8, 11, 12, 13]
-        consultant_image_shapes = [10, 14, 15, 16]
+        # First, collect all placeholder shapes organized by position/proximity
+        text_placeholders = []
+        image_placeholders = []
+        experience_shapes = []
         
-        for i, consultant_data in enumerate(consultants_data[:4]):  # Limit to 4 consultants
-            try:
-                # Update text placeholder
-                if i < len(consultant_text_shapes):
-                    text_shape_idx = consultant_text_shapes[i]
-                    if text_shape_idx < len(slide.shapes):
-                        text_shape = slide.shapes[text_shape_idx]
-                        if hasattr(text_shape, 'text'):
-                            # Create consultant text content
-                            consultant_text = f"{consultant_data['name']}\n{consultant_data['role']}, {consultant_data['location']}\n"
-                            consultant_text += "x+ years of consulting experience\n\n"
-                            for bullet in consultant_data['experience_bullets']:
-                                consultant_text += f"• {bullet}\n"
-                            
-                            text_shape.text = consultant_text
-                            logger.info(f"Updated text for consultant {i+1}: {consultant_data['name']}")
+        for shape in slide.shapes:
+            if hasattr(shape, 'text_frame') and shape.text_frame:
+                shape_text = shape.text.strip()
                 
-                # Update image placeholder
-                if i < len(consultant_image_shapes) and consultant_data['headshot_image']:
-                    image_shape_idx = consultant_image_shapes[i]
-                    if image_shape_idx < len(slide.shapes):
-                        try:
-                            # Get the current image shape to determine size and position
-                            current_shape = slide.shapes[image_shape_idx]
-                            
-                            # Get position and size
-                            left = current_shape.left
-                            top = current_shape.top
-                            width = current_shape.width
-                            height = current_shape.height
-                            
-                            # Process the headshot image
-                            target_width = int(width.inches * 96)  # Convert to pixels (96 DPI)
-                            target_height = int(height.inches * 96)
-                            
-                            processed_image = self._crop_and_resize_image(
-                                consultant_data['headshot_image'],
-                                target_width,
-                                target_height
-                            )
-                            
-                            # Save processed image temporarily
-                            with tempfile.NamedTemporaryFile(suffix='.jpg', delete=False) as temp_img:
-                                temp_img.write(processed_image)
-                                temp_img_path = temp_img.name
-                            
-                            # Remove old image shape
-                            slide.shapes._spTree.remove(current_shape._element)
-                            
-                            # Add new image
-                            slide.shapes.add_picture(temp_img_path, left, top, width, height)
-                            
-                            # Clean up temp file
-                            os.unlink(temp_img_path)
-                            
-                            logger.info(f"Updated image for consultant {i+1}: {consultant_data['name']}")
-                            
-                        except Exception as e:
-                            logger.warning(f"Failed to update image for consultant {i+1}: {str(e)}")
+                # Find text placeholders
+                if shape_text in ["First Name", "Last Name", "Office"]:
+                    text_placeholders.append({
+                        'shape': shape,
+                        'placeholder_type': shape_text,
+                        'position': shape.top + shape.left  # Simple position ranking
+                    })
+                
+                # Find experience shapes
+                elif "years of consulting experience" in shape_text.lower():
+                    experience_shapes.append({
+                        'shape': shape,
+                        'position': shape.top + shape.left
+                    })
+            
+            # Find image placeholders
+            should_check_image = False
+            if hasattr(shape, 'text') and "replace picture" in shape.text.lower():
+                should_check_image = True
+            elif hasattr(shape, 'image') and hasattr(shape, 'name'):
+                if "replace" in shape.name.lower() or "picture" in shape.name.lower():
+                    should_check_image = True
+            
+            if should_check_image:
+                image_placeholders.append({
+                    'shape': shape,
+                    'position': shape.top + shape.left
+                })
+        
+        # Sort placeholders by position (top-left to bottom-right order)
+        text_placeholders.sort(key=lambda x: x['position'])
+        image_placeholders.sort(key=lambda x: x['position'])
+        experience_shapes.sort(key=lambda x: x['position'])
+        
+        # Group text placeholders by consultant (every 3 placeholders = 1 consultant)
+        consultant_text_groups = []
+        for i in range(0, len(text_placeholders), 3):
+            group = text_placeholders[i:i+3]
+            if len(group) == 3:  # Only process complete groups
+                consultant_text_groups.append(group)
+        
+        # Process up to 4 consultants
+        shapes_to_remove = []
+        new_images = []
+        
+        for i, consultant_data in enumerate(consultants_data[:4]):
+            try:
+                # Update text placeholders for this consultant
+                if i < len(consultant_text_groups):
+                    for placeholder in consultant_text_groups[i]:
+                        shape = placeholder['shape']
+                        placeholder_type = placeholder['placeholder_type']
+                        
+                        if placeholder_type == "First Name":
+                            shape.text = consultant_data['first_name']
+                            logger.info(f"Replaced 'First Name' with '{consultant_data['first_name']}' for consultant {i+1}")
+                        elif placeholder_type == "Last Name":
+                            shape.text = consultant_data['last_name']
+                            logger.info(f"Replaced 'Last Name' with '{consultant_data['last_name']}' for consultant {i+1}")
+                        elif placeholder_type == "Office":
+                            shape.text = consultant_data['office']
+                            logger.info(f"Replaced 'Office' with '{consultant_data['office']}' for consultant {i+1}")
+                
+                # Add bullets to experience shape for this consultant
+                if i < len(experience_shapes):
+                    experience_shape = experience_shapes[i]['shape']
+                    existing_text = experience_shape.text.rstrip()
+                    bullets_text = "\n".join([f"• {bullet}" for bullet in consultant_data['experience_bullets']])
+                    experience_shape.text = existing_text + "\n\n" + bullets_text
+                    logger.info(f"Added experience bullets for consultant {i+1}")
+                
+                # Replace image placeholder for this consultant
+                if i < len(image_placeholders) and consultant_data['headshot_image']:
+                    placeholder_info = image_placeholders[i]
+                    shape = placeholder_info['shape']
+                    
+                    # Get position and size
+                    left = shape.left
+                    top = shape.top
+                    width = shape.width
+                    height = shape.height
+                    
+                    # Process the headshot image
+                    target_width = int(width.inches * 96)  # Convert to pixels (96 DPI)
+                    target_height = int(height.inches * 96)
+                    
+                    processed_image = self._crop_and_resize_image(
+                        consultant_data['headshot_image'],
+                        target_width,
+                        target_height
+                    )
+                    
+                    # Save processed image temporarily
+                    with tempfile.NamedTemporaryFile(suffix='.jpg', delete=False) as temp_img:
+                        temp_img.write(processed_image)
+                        temp_img_path = temp_img.name
+                    
+                    # Mark for removal and schedule new image
+                    shapes_to_remove.append(shape)
+                    new_images.append({
+                        'path': temp_img_path,
+                        'left': left,
+                        'top': top,
+                        'width': width,
+                        'height': height
+                    })
+                    
+                    logger.info(f"Scheduled image replacement for consultant {i+1}")
                 
             except Exception as e:
                 logger.error(f"Failed to update consultant {i+1} data: {str(e)}")
                 continue
+        
+        # Remove old placeholder image shapes
+        for shape in shapes_to_remove:
+            try:
+                slide.shapes._spTree.remove(shape._element)
+            except Exception as e:
+                logger.warning(f"Failed to remove placeholder shape: {str(e)}")
+        
+        # Add new images
+        for img_info in new_images:
+            try:
+                slide.shapes.add_picture(
+                    img_info['path'],
+                    img_info['left'],
+                    img_info['top'],
+                    img_info['width'],
+                    img_info['height']
+                )
+                # Clean up temp file
+                os.unlink(img_info['path'])
+            except Exception as e:
+                logger.warning(f"Failed to add new image: {str(e)}")
+                # Clean up temp file even on failure
+                try:
+                    os.unlink(img_info['path'])
+                except:
+                    pass
         
         # Save the final presentation
         output_filename = "Team_Slide_Output.pptx"
