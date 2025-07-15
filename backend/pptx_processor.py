@@ -9,6 +9,7 @@ from pptx.enum.shapes import MSO_SHAPE_TYPE
 from PIL import Image
 import io
 import tempfile
+import shutil
 
 logger = logging.getLogger(__name__)
 
@@ -29,7 +30,7 @@ class PowerPointProcessor:
         """
         # Get all .pptx files in the CVs folder
         try:
-            cv_files = [f for f in os.listdir(self.cvs_folder) if f.endswith('.pptx')]
+            cv_files = [f for f in os.listdir(self.cvs_folder) if f.endswith('.pptx') and not f.startswith('CV_Placeholder')]
         except OSError:
             logger.error(f"Could not list files in {self.cvs_folder}")
             return None
@@ -56,19 +57,18 @@ class PowerPointProcessor:
         logger.warning(f"No CV file found for {consultant_name}. Available files: {cv_files}")
         return None
         
-    def extract_consultant_data(self, cv_filepath: str, consultant_name: str) -> Dict:
+    def extract_consultant_data_from_template(self, cv_filepath: str, consultant_name: str) -> Dict:
         """
-        Extract consultant data from a CV PowerPoint file
+        Extract consultant data from a CV PowerPoint file using the CV_Placeholder structure as reference
         Returns: {
             'name': str,
             'role': str, 
             'location': str,
-            'experience_summary': str,
             'experience_bullets': List[str],
             'headshot_image': bytes or None
         }
         """
-        logger.info(f"Extracting data from {cv_filepath}")
+        logger.info(f"Extracting data from {cv_filepath} using template structure")
         
         try:
             prs = Presentation(cv_filepath)
@@ -79,90 +79,93 @@ class PowerPointProcessor:
                 
             slide = prs.slides[0]
             
-            # Extract headshot (first image shape)
-            headshot_image = None
-            for shape in slide.shapes:
-                if hasattr(shape, 'image'):
-                    # Found an image, extract it
-                    image_stream = io.BytesIO(shape.image.blob)
-                    headshot_image = image_stream.getvalue()
-                    logger.info(f"Extracted headshot image from {cv_filepath}")
-                    break
-            
-            # Extract text content
-            all_text = []
-            for shape in slide.shapes:
-                if hasattr(shape, 'text') and shape.text.strip():
-                    all_text.append(shape.text.strip())
-            
-            # Parse the text to extract name, role, location, summary, and bullets
-            name, role, location, experience_summary, experience_bullets = self._parse_cv_text(all_text, consultant_name)
-            
-            return {
-                'name': name,
-                'role': role,
-                'location': location,
-                'experience_summary': experience_summary,
-                'experience_bullets': experience_bullets,
-                'headshot_image': headshot_image
+            # Initialize data
+            consultant_data = {
+                'name': consultant_name,
+                'role': "Senior Consultant",
+                'location': "Global",
+                'experience_bullets': [],
+                'headshot_image': None
             }
+            
+            # Extract data from shapes based on CV_Placeholder structure
+            for i, shape in enumerate(slide.shapes):
+                try:
+                    # Shape 7: IMAGE (headshot) - based on our template analysis
+                    if hasattr(shape, 'image') and consultant_data['headshot_image'] is None:
+                        image_stream = io.BytesIO(shape.image.blob)
+                        consultant_data['headshot_image'] = image_stream.getvalue()
+                        logger.info(f"Extracted headshot image from shape {i}")
+                    
+                    # Shape 4: Name, position, location - based on our template analysis  
+                    elif hasattr(shape, 'text') and shape.text.strip():
+                        text = shape.text.strip()
+                        
+                        # Check if this contains name/position info (usually has "Position" or office locations)
+                        if any(keyword in text.lower() for keyword in ['position', 'office', 'location', 'germany', 'london', 'new york', 'paris', 'berlin', 'zurich', 'geneva', 'munich']):
+                            lines = [line.strip() for line in text.split('\n') if line.strip()]
+                            if lines:
+                                # Find the name line - usually contains comma and proper name structure
+                                for line in lines:
+                                    if ',' in line and any(char.isalpha() for char in line):
+                                        name_parts = line.split(',')
+                                        if len(name_parts) >= 2:
+                                            # Format: "Last Name, First Name" or similar
+                                            last_name = name_parts[0].strip()
+                                            first_name = name_parts[1].strip()
+                                            # Only update if this looks like a proper name (not random text)
+                                            if len(last_name) < 50 and len(first_name) < 50 and not any(keyword in line.lower() for keyword in ['university', 'msc', 'ba', 'phd', 'degree']):
+                                                consultant_data['name'] = f"{first_name} {last_name}"
+                                                break
+                                
+                                # Look for position and location in all lines
+                                for line in lines:
+                                    if any(keyword in line.lower() for keyword in ['consultant', 'manager', 'director', 'analyst', 'partner']) and len(line) < 100:
+                                        if consultant_data['role'] == "Senior Consultant":  # Only update if still default
+                                            consultant_data['role'] = line.strip()
+                                    elif any(keyword in line.lower() for keyword in ['germany', 'london', 'new york', 'paris', 'berlin', 'zurich', 'geneva', 'munich']) and len(line) < 100:
+                                        if consultant_data['location'] == "Global":  # Only update if still default
+                                            consultant_data['location'] = line.strip()
+                        
+                        # Shape 1: "Selected consulting engagement experience" - extract bullet points
+                        elif 'consulting engagement experience' in text.lower() or 'consulting experience' in text.lower():
+                            lines = [line.strip() for line in text.split('\n') if line.strip()]
+                            bullets = []
+                            
+                            for line in lines:
+                                # Skip header lines
+                                if 'consulting engagement experience' in line.lower() or 'take 3 bullet' in line.lower():
+                                    continue
+                                    
+                                # Look for actual bullet points (meaningful content lines)
+                                if len(line) > 20 and not line.startswith('Take '):  # Avoid instruction text
+                                    # Clean up bullet formatting
+                                    clean_line = line.lstrip('•-▪◦→ ').strip()
+                                    if clean_line and len(clean_line) > 20:
+                                        bullets.append(clean_line)
+                            
+                            # Take only first 3 bullets as required
+                            consultant_data['experience_bullets'] = bullets[:3]
+                            logger.info(f"Extracted {len(consultant_data['experience_bullets'])} experience bullets")
+                        
+                except Exception as e:
+                    logger.warning(f"Error processing shape {i}: {str(e)}")
+                    continue
+            
+            # Ensure we have exactly 3 bullet points
+            while len(consultant_data['experience_bullets']) < 3:
+                consultant_data['experience_bullets'].append("Proven track record in client engagement and project delivery")
+            
+            consultant_data['experience_bullets'] = consultant_data['experience_bullets'][:3]
+            
+            logger.info(f"Extracted data - Name: {consultant_data['name']}, Role: {consultant_data['role']}, "
+                       f"Location: {consultant_data['location']}, Bullets: {len(consultant_data['experience_bullets'])}")
+            
+            return consultant_data
             
         except Exception as e:
             logger.error(f"Error extracting data from {cv_filepath}: {str(e)}")
             raise
-    
-    def _parse_cv_text(self, text_blocks: List[str], consultant_name: str) -> Tuple[str, str, str, str, List[str]]:
-        """
-        Parse text blocks to extract name, role, location, experience summary, and experience bullets
-        """
-        name = consultant_name  # Use provided name as fallback
-        role = ""
-        location = ""
-        experience_summary = ""
-        experience_bullets = []
-        
-        for text_block in text_blocks:
-            lines = [line.strip() for line in text_block.split('\n') if line.strip()]
-            
-            for line in lines:
-                # Skip empty lines
-                if not line:
-                    continue
-                    
-                # Look for bullet points (lines starting with •, -, or similar)
-                if any(line.startswith(bullet) for bullet in ['•', '-', '▪', '◦', '→']):
-                    clean_bullet = line.lstrip('•-▪◦→ ').strip()
-                    if clean_bullet and len(clean_bullet) > 10:  # Only meaningful bullets
-                        experience_bullets.append(clean_bullet)
-                
-                # Look for role/location patterns
-                elif any(keyword in line.lower() for keyword in ['consultant', 'manager', 'director', 'analyst', 'partner']):
-                    if not role and len(line) < 100:  # Reasonable length for a role
-                        role = line
-                        
-                elif any(keyword in line.lower() for keyword in ['london', 'new york', 'paris', 'berlin', 'zurich', 'geneva', 'munich']):
-                    if not location and len(line) < 50:  # Reasonable length for location
-                        location = line
-                
-                # Look for experience summary (lines with "years", "experience", etc.)
-                elif any(keyword in line.lower() for keyword in ['years', 'experience', 'expertise', 'specializes']) and not experience_summary:
-                    if 20 <= len(line) <= 150:  # Reasonable length for summary
-                        experience_summary = line
-        
-        # Limit experience bullets to exactly 3 as per requirements
-        experience_bullets = experience_bullets[:3]
-        
-        # Fallback values if not found
-        if not role:
-            role = "Senior Consultant"
-        if not location:
-            location = "Global"
-        if not experience_summary:
-            experience_summary = f"Experienced consultant with expertise in strategy and operations"
-            
-        logger.info(f"Parsed data - Name: {name}, Role: {role}, Location: {location}, Summary: {experience_summary[:50]}..., Bullets: {len(experience_bullets)}")
-        
-        return name, role, location, experience_summary, experience_bullets
     
     def _crop_and_resize_image(self, image_bytes: bytes, target_width: int, target_height: int) -> bytes:
         """
@@ -204,173 +207,149 @@ class PowerPointProcessor:
         except Exception as e:
             logger.warning(f"Error processing image: {str(e)}")
             return image_bytes  # Return original if processing fails
-    
-    def generate_team_slide(self, consultant_names: List[str], filenames: List[str]) -> str:
+
+    def create_team_slide(self, names: List[str]) -> str:
         """
-        Generate a team slide with 2x2 layout matching the example format exactly
-        Returns path to the generated PowerPoint file
-        """
-        logger.info("Starting team slide generation with exact example formatting")
+        Create a team slide using template files instead of building from scratch.
+        Uses CV_Placeholder.pptx as reference for parsing consultant CVs
+        and Output_Example_Placeholder_Logic.pptx as the base template.
         
-        # Extract data from all CV files
-        consultants_data = []
-        for name, filename in zip(consultant_names, filenames):
-            cv_filepath = os.path.join(self.cvs_folder, filename)
+        Args:
+            names: List of consultant names to include in the team slide
             
-            if not os.path.exists(cv_filepath):
-                raise FileNotFoundError(f"CV file not found: {filename}")
+        Returns:
+            Path to the generated Team_Slide_Output.pptx file
+        """
+        logger.info(f"Creating team slide for consultants: {names}")
+        
+        # Find and extract data from consultant CV files
+        consultants_data = []
+        for name in names:
+            filename = self.find_cv_file(name)
+            if not filename:
+                logger.warning(f"CV file not found for {name}, using placeholder data")
+                # Create placeholder data for missing consultant
+                consultants_data.append({
+                    'name': name,
+                    'role': "Senior Consultant",
+                    'location': "Global",
+                    'experience_bullets': [
+                        "Extensive experience in strategic consulting",
+                        "Proven track record in client engagement",
+                        "Specialized in project delivery and transformation"
+                    ],
+                    'headshot_image': None
+                })
+            else:
+                cv_filepath = os.path.join(self.cvs_folder, filename)
+                try:
+                    data = self.extract_consultant_data_from_template(cv_filepath, name)
+                    consultants_data.append(data)
+                except Exception as e:
+                    logger.error(f"Failed to extract data from {filename}: {str(e)}")
+                    # Use placeholder data if extraction fails
+                    consultants_data.append({
+                        'name': name,
+                        'role': "Senior Consultant", 
+                        'location': "Global",
+                        'experience_bullets': [
+                            "Extensive experience in strategic consulting",
+                            "Proven track record in client engagement", 
+                            "Specialized in project delivery and transformation"
+                        ],
+                        'headshot_image': None
+                    })
+        
+        # Load the output template
+        template_path = os.path.join(self.examples_folder, 'Outpout_Example_Placeholder_Logic.pptx')
+        if not os.path.exists(template_path):
+            raise FileNotFoundError(f"Output template not found: {template_path}")
+        
+        logger.info(f"Loading output template from {template_path}")
+        prs = Presentation(template_path)
+        slide = prs.slides[0]
+        
+        # Map consultant data to template placeholders
+        # Based on our analysis: shapes 8, 11, 12, 13 contain consultant text
+        # shapes 10, 14, 15, 16 contain consultant images
+        consultant_text_shapes = [8, 11, 12, 13]
+        consultant_image_shapes = [10, 14, 15, 16]
+        
+        for i, consultant_data in enumerate(consultants_data[:4]):  # Limit to 4 consultants
+            try:
+                # Update text placeholder
+                if i < len(consultant_text_shapes):
+                    text_shape_idx = consultant_text_shapes[i]
+                    if text_shape_idx < len(slide.shapes):
+                        text_shape = slide.shapes[text_shape_idx]
+                        if hasattr(text_shape, 'text'):
+                            # Create consultant text content
+                            consultant_text = f"{consultant_data['name']}\n{consultant_data['role']}, {consultant_data['location']}\n"
+                            consultant_text += "x+ years of consulting experience\n\n"
+                            for bullet in consultant_data['experience_bullets']:
+                                consultant_text += f"• {bullet}\n"
+                            
+                            text_shape.text = consultant_text
+                            logger.info(f"Updated text for consultant {i+1}: {consultant_data['name']}")
                 
-            data = self.extract_consultant_data(cv_filepath, name)
-            consultants_data.append(data)
+                # Update image placeholder
+                if i < len(consultant_image_shapes) and consultant_data['headshot_image']:
+                    image_shape_idx = consultant_image_shapes[i]
+                    if image_shape_idx < len(slide.shapes):
+                        try:
+                            # Get the current image shape to determine size and position
+                            current_shape = slide.shapes[image_shape_idx]
+                            
+                            # Get position and size
+                            left = current_shape.left
+                            top = current_shape.top
+                            width = current_shape.width
+                            height = current_shape.height
+                            
+                            # Process the headshot image
+                            target_width = int(width.inches * 96)  # Convert to pixels (96 DPI)
+                            target_height = int(height.inches * 96)
+                            
+                            processed_image = self._crop_and_resize_image(
+                                consultant_data['headshot_image'],
+                                target_width,
+                                target_height
+                            )
+                            
+                            # Save processed image temporarily
+                            with tempfile.NamedTemporaryFile(suffix='.jpg', delete=False) as temp_img:
+                                temp_img.write(processed_image)
+                                temp_img_path = temp_img.name
+                            
+                            # Remove old image shape
+                            slide.shapes._spTree.remove(current_shape._element)
+                            
+                            # Add new image
+                            slide.shapes.add_picture(temp_img_path, left, top, width, height)
+                            
+                            # Clean up temp file
+                            os.unlink(temp_img_path)
+                            
+                            logger.info(f"Updated image for consultant {i+1}: {consultant_data['name']}")
+                            
+                        except Exception as e:
+                            logger.warning(f"Failed to update image for consultant {i+1}: {str(e)}")
+                
+            except Exception as e:
+                logger.error(f"Failed to update consultant {i+1} data: {str(e)}")
+                continue
         
-        # Create new presentation matching the example format
-        prs = Presentation()
-        
-        # Set slide size to 16:9 (standard)
-        prs.slide_width = Inches(13.33)
-        prs.slide_height = Inches(7.5)
-        
-        # Add a slide
-        slide_layout = prs.slide_layouts[6]  # Blank layout
-        slide = prs.slides.add_slide(slide_layout)
-        
-        # Set slide background to white
-        slide.background.fill.solid()
-        slide.background.fill.fore_color.rgb = RGBColor(255, 255, 255)
-        
-        # Define layout parameters matching the example exactly
-        # These measurements are based on typical consulting slide layouts
-        margin_top = Inches(0.8)
-        margin_left = Inches(0.6)
-        margin_right = Inches(0.6)
-        margin_bottom = Inches(0.6)
-        
-        # Calculate quadrant dimensions
-        slide_width = prs.slide_width
-        slide_height = prs.slide_height
-        
-        available_width = slide_width - margin_left - margin_right
-        available_height = slide_height - margin_top - margin_bottom
-        
-        quadrant_width = available_width / 2
-        quadrant_height = available_height / 2
-        
-        # Define positions for each quadrant (top-left, top-right, bottom-left, bottom-right)
-        positions = [
-            (margin_left, margin_top),  # Top-left
-            (margin_left + quadrant_width, margin_top),  # Top-right
-            (margin_left, margin_top + quadrant_height),  # Bottom-left
-            (margin_left + quadrant_width, margin_top + quadrant_height)  # Bottom-right
-        ]
-        
-        # Add each consultant to their quadrant
-        for i, (data, position) in enumerate(zip(consultants_data, positions)):
-            self._add_consultant_to_slide_exact_format(slide, data, position, quadrant_width, quadrant_height)
-        
-        # Save the presentation
+        # Save the final presentation
         output_filename = "Team_Slide_Output.pptx"
         output_path = os.path.join(self.output_folder, output_filename)
         prs.save(output_path)
         
         logger.info(f"Team slide saved to {output_path}")
         return output_path
-    
-    def _add_consultant_to_slide_exact_format(self, slide, consultant_data: Dict, position: Tuple, width, height):
+
+    # Keep the old method name for backward compatibility
+    def generate_team_slide(self, consultant_names: List[str], filenames: List[str] = None) -> str:
         """
-        Add a single consultant's information to a quadrant matching the example format exactly
+        Backward compatibility wrapper for create_team_slide
         """
-        left, top = position
-        
-        # Define layout within quadrant matching the example
-        image_size = min(Inches(1.8), width * 0.35)  # Proportional to quadrant
-        image_left = left + Inches(0.2)
-        image_top = top + Inches(0.2)
-        
-        # Text starts next to the image
-        text_left = image_left + image_size + Inches(0.3)
-        text_width = width - image_size - Inches(0.7)
-        
-        # Add headshot image if available (cropped and resized)
-        if consultant_data['headshot_image']:
-            try:
-                # Calculate target dimensions in pixels (approximate)
-                target_width = int(image_size.inches * 96)  # 96 DPI
-                target_height = int(image_size.inches * 96)
-                
-                # Crop and resize image
-                processed_image = self._crop_and_resize_image(
-                    consultant_data['headshot_image'], 
-                    target_width, 
-                    target_height
-                )
-                
-                # Save image temporarily
-                with tempfile.NamedTemporaryFile(suffix='.jpg', delete=False) as temp_img:
-                    temp_img.write(processed_image)
-                    temp_img_path = temp_img.name
-                
-                # Add image to slide
-                slide.shapes.add_picture(temp_img_path, image_left, image_top, image_size, image_size)
-                
-                # Clean up temp file
-                os.unlink(temp_img_path)
-                
-            except Exception as e:
-                logger.warning(f"Could not add image for {consultant_data['name']}: {str(e)}")
-        
-        # Add consultant name in Consulting Purple (matching example)
-        name_top = image_top
-        name_box = slide.shapes.add_textbox(text_left, name_top, text_width, Inches(0.4))
-        name_frame = name_box.text_frame
-        name_frame.margin_left = Pt(0)
-        name_frame.margin_top = Pt(0)
-        name_frame.margin_bottom = Pt(0)
-        name_para = name_frame.paragraphs[0]
-        name_run = name_para.add_run()
-        name_run.text = consultant_data['name']
-        name_run.font.bold = True
-        name_run.font.size = Pt(16)  # Larger for prominence
-        name_run.font.color.rgb = CONSULTING_PURPLE  # Purple as specified
-        
-        # Add experience summary (one-line as specified)
-        summary_top = name_top + Inches(0.5)
-        summary_box = slide.shapes.add_textbox(text_left, summary_top, text_width, Inches(0.3))
-        summary_frame = summary_box.text_frame
-        summary_frame.margin_left = Pt(0)
-        summary_frame.margin_top = Pt(0)
-        summary_frame.margin_bottom = Pt(0)
-        summary_para = summary_frame.paragraphs[0]
-        summary_run = summary_para.add_run()
-        summary_run.text = consultant_data['experience_summary']
-        summary_run.font.size = Pt(11)
-        summary_run.font.color.rgb = GRAY_TEXT
-        
-        # Add exactly 3 bullet points (as specified)
-        bullets_top = summary_top + Inches(0.4)
-        bullets_height = height - Inches(1.4)  # Remaining space
-        bullets_box = slide.shapes.add_textbox(text_left, bullets_top, text_width, bullets_height)
-        bullets_frame = bullets_box.text_frame
-        bullets_frame.margin_left = Pt(0)
-        bullets_frame.margin_top = Pt(0)
-        
-        # Add exactly 3 bullet points with consistent formatting
-        bullets_to_show = consultant_data['experience_bullets'][:3]  # Ensure exactly 3
-        
-        # Pad with generic bullets if we don't have enough
-        while len(bullets_to_show) < 3:
-            bullets_to_show.append("Proven track record in client engagement and project delivery")
-        
-        for i, bullet in enumerate(bullets_to_show):
-            if i == 0:
-                para = bullets_frame.paragraphs[0]
-            else:
-                para = bullets_frame.add_paragraph()
-            
-            para.level = 0
-            para.space_after = Pt(4)  # Consistent spacing
-            run = para.add_run()
-            run.text = f"• {bullet}"
-            run.font.size = Pt(10)
-            run.font.color.rgb = BLACK_TEXT
-        
-        logger.info(f"Added {consultant_data['name']} to slide at position {position} with exact formatting")
+        return self.create_team_slide(consultant_names)

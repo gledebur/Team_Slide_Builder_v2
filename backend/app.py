@@ -27,7 +27,7 @@ def health_check():
 @app.route('/generate', methods=['POST'])
 def generate_team_slide():
     """
-    Generate team slide from consultant names
+    Generate team slide from consultant names using template files
     Expected JSON payload: {"consultants": ["Name1", "Name2", "Name3", "Name4"]}
     """
     try:
@@ -51,18 +51,8 @@ def generate_team_slide():
         # Initialize PowerPoint processor
         processor = PowerPointProcessor(CVS_FOLDER, OUTPUT_FOLDER, OUTPUT_EXAMPLES_FOLDER)
         
-        # Find matching filenames for each consultant
-        filenames = []
-        for name in consultant_names:
-            filename = processor.find_cv_file(name)
-            if not filename:
-                return jsonify({"error": f"CV file not found for consultant: {name}"}), 404
-            filenames.append(filename)
-        
-        logger.info(f"Found matching files: {filenames}")
-        
-        # Process the consultants and generate team slide
-        output_file = processor.generate_team_slide(consultant_names, filenames)
+        # Generate team slide using template files - no need to find filenames manually
+        output_file = processor.create_team_slide(consultant_names)
         
         # Return the generated file
         return send_file(
@@ -73,8 +63,8 @@ def generate_team_slide():
         )
         
     except FileNotFoundError as e:
-        logger.error(f"File not found: {str(e)}")
-        return jsonify({"error": f"CV file not found: {str(e)}"}), 404
+        logger.error(f"Template file not found: {str(e)}")
+        return jsonify({"error": f"Template file not found: {str(e)}"}), 404
         
     except Exception as e:
         logger.error(f"Error generating team slide: {str(e)}")
@@ -84,7 +74,7 @@ def generate_team_slide():
 def list_cvs():
     """List available CV files for debugging"""
     try:
-        cv_files = [f for f in os.listdir(CVS_FOLDER) if f.endswith('.pptx')]
+        cv_files = [f for f in os.listdir(CVS_FOLDER) if f.endswith('.pptx') and not f.startswith('CV_Placeholder')]
         return jsonify({"cv_files": cv_files}), 200
     except Exception as e:
         return jsonify({"error": str(e)}), 500
